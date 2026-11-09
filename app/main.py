@@ -1,3 +1,4 @@
+
 import os
 from pathlib import Path
 
@@ -8,13 +9,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
 
+# Load .env locally
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+# IMPORTANT: Must be at module level
 app = FastAPI(title="Valtoro API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
     allow_methods=["GET"],
     allow_headers=["*"],
 )
@@ -36,23 +42,47 @@ _client = None
 
 def products_collection():
     global _client
+
     uri = os.environ.get("MONGODB_URI")
+
     if not uri:
-        raise HTTPException(status_code=500, detail="MONGODB_URI is not set")
+        raise HTTPException(
+            status_code=500,
+            detail="MONGODB_URI is not set"
+        )
+
     if _client is None:
-        _client = MongoClient(uri, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=8000)
+        _client = MongoClient(
+            uri,
+            tlsCAFile=certifi.where(),
+            serverSelectionTimeoutMS=8000
+        )
+
     return _client["valtoro"]["products"]
+
+
+@app.get("/")
+def root():
+    return {"message": "Valtoro API is running"}
 
 
 @app.get("/api/products")
 def list_products(category: str | None = Query(default=None)):
     query = {"category": category} if category else {}
-    try:
-        products = list(products_collection().find(query, PUBLIC_FIELDS).sort("productId", 1))
-    except PyMongoError as error:
-    print(f"MongoDB Error: {repr(error)}")
 
-    raise HTTPException(
-        status_code=503,
-        detail=f"Could not read products: {str(error)}"
-    ) from errorreturn {"products": products}
+    try:
+        products = list(
+            products_collection()
+            .find(query, PUBLIC_FIELDS)
+            .sort("productId", 1)
+        )
+
+        return {"products": products}
+
+    except PyMongoError as error:
+        print(f"MongoDB Error: {repr(error)}")
+
+        raise HTTPException(
+            status_code=503,
+            detail="Could not read products"
+        ) from error
