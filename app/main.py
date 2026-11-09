@@ -50,5 +50,9 @@ def list_products(category: str | None = Query(default=None)):
     try:
         products = list(products_collection().find(query, PUBLIC_FIELDS).sort("productId", 1))
     except PyMongoError as error:
-        raise HTTPException(status_code=503, detail="Could not read products") from error
-    return {"products": products}
+    print(f"MongoDB Error: {repr(error)}")
+
+    raise HTTPException(
+        status_code=503,
+        detail=f"Could not read products: {str(error)}"
+    ) from errorreturn {"products": products}
