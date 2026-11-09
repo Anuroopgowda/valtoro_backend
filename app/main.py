@@ -12,6 +12,20 @@ from pymongo.errors import PyMongoError
 # Load .env locally
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
+import os
+from urllib.parse import urlsplit
+
+uri = os.environ.get("MONGODB_URI")
+
+if uri:
+    parsed = urlsplit(uri)
+    print("MONGODB_URI exists:", True)
+    print("Username:", parsed.username)
+    print("Host:", parsed.hostname)
+    print("Database:", parsed.path.lstrip("/").split("?")[0])
+else:
+    print("MONGODB_URI exists:", False)
+
 # IMPORTANT: Must be at module level
 app = FastAPI(title="Valtoro API")
 
