@@ -1,8 +1,16 @@
+
 [project]
 name = "valtoro-backend"
 version = "1.0.0"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.115.5",
+    "uvicorn==0.32.1",
+    "pymongo==4.10.1",
+    "dnspython==2.7.0",
+    "certifi==2026.10.23",
+    "python-dotenv==1.0.1",
+]
 
 [tool.vercel]
 entrypoint = "app.main:app"
-
