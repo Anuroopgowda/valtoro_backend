@@ -28,4 +28,4 @@ try:
 
 except Exception as e:
     print("MongoDB connection failed!")
-    print(repr(e))
+    print("Check MONGODB_URI and network access, then retry.")
