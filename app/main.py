@@ -53,10 +53,26 @@ PUBLIC_FIELDS = {
 _client = None
 
 
+def env_value(name: str, default: str | None = None) -> str | None:
+    """Trim whitespace accidentally included in deployment environment values."""
+    value = os.environ.get(name)
+    return value.strip() if value is not None else default
+
+
+def log_mongo_error(operation: str, error: PyMongoError) -> None:
+    """Log operation and safe write-concern metadata without logging the URI."""
+    details = getattr(error, "details", None) or {}
+    write_concern = (details.get("errInfo") or {}).get("writeConcern")
+    if write_concern:
+        logger.error("%s failed: %s; write concern=%s", operation, type(error).__name__, write_concern)
+    else:
+        logger.error("%s failed: %s", operation, type(error).__name__)
+
+
 def products_collection():
     global _client
 
-    uri = os.environ.get("MONGODB_URI")
+    uri = env_value("MONGODB_URI")
 
     if not uri:
         raise HTTPException(
@@ -88,9 +104,9 @@ def inventory_admin(authorization: str | None = Header(default=None)):
         raise HTTPException(status_code=401, detail="Admin authorization required")
     supplied = authorization[7:]
     configured = (
-        ("Anuroop", os.environ.get("INVENTORY_ADMIN_ANUROOP_KEY")),
-        ("Varun", os.environ.get("INVENTORY_ADMIN_VARUN_KEY")),
-        ("Vinit", os.environ.get("INVENTORY_ADMIN_VINIT_KEY")),
+        ("Anuroop", env_value("INVENTORY_ADMIN_ANUROOP_KEY")),
+        ("Varun", env_value("INVENTORY_ADMIN_VARUN_KEY")),
+        ("Vinit", env_value("INVENTORY_ADMIN_VINIT_KEY")),
     )
     if not any(key for _, key in configured):
         raise HTTPException(status_code=503, detail="Inventory administrator keys are not configured")
@@ -124,13 +140,13 @@ def inventory_view(document):
 
 
 def github_config():
-    values = [os.environ.get(name) for name in ("GITHUB_TOKEN", "GITHUB_REPO_OWNER", "GITHUB_REPO_NAME")]
+    values = [env_value(name) for name in ("GITHUB_TOKEN", "GITHUB_REPO_OWNER", "GITHUB_REPO_NAME")]
     if not all(values):
         raise HTTPException(status_code=503, detail="GitHub image storage is not configured")
-    ui_owner = os.environ.get("GITHUB_UI_REPO_OWNER", values[1])
-    ui_repo = os.environ.get("GITHUB_UI_REPO_NAME", values[2])
-    ui_branch = os.environ.get("GITHUB_UI_BRANCH", os.environ.get("GITHUB_BRANCH", "main"))
-    return values[0], ui_owner, ui_repo, ui_branch, os.environ.get("GITHUB_IMAGE_FOLDER", "products").strip("/")
+    ui_owner = env_value("GITHUB_UI_REPO_OWNER", values[1])
+    ui_repo = env_value("GITHUB_UI_REPO_NAME", values[2])
+    ui_branch = env_value("GITHUB_UI_BRANCH", env_value("GITHUB_BRANCH", "main"))
+    return values[0], ui_owner, ui_repo, ui_branch, (env_value("GITHUB_IMAGE_FOLDER", "products") or "products").strip("/")
 
 
 def github_request(method, path, **kwargs):
@@ -141,6 +157,12 @@ def github_request(method, path, **kwargs):
         raise HTTPException(status_code=502, detail="GitHub image storage is unavailable") from error
     if response.status_code == 403 and response.headers.get("X-RateLimit-Remaining") == "0":
         raise HTTPException(status_code=503, detail="GitHub API rate limit reached; try again later")
+    if response.status_code == 401:
+        logger.error("GitHub API rejected GITHUB_TOKEN (401)")
+        raise HTTPException(status_code=503, detail="GitHub rejected GITHUB_TOKEN. Update it in the backend deployment environment.")
+    if response.status_code == 403:
+        logger.error("GitHub API denied repository content access (403)")
+        raise HTTPException(status_code=503, detail="GITHUB_TOKEN lacks repository contents permission")
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="GitHub image was not found")
     if response.status_code >= 400:
@@ -179,6 +201,12 @@ def github_image_response(filename: str):
         raise HTTPException(status_code=404, detail="Image not found in GitHub repository")
     if response.status_code == 403 and response.headers.get("X-RateLimit-Remaining") == "0":
         raise HTTPException(status_code=503, detail="GitHub API rate limit reached")
+    if response.status_code == 401:
+        logger.error("GitHub API rejected GITHUB_TOKEN while reading image (401)")
+        raise HTTPException(status_code=503, detail="GitHub rejected GITHUB_TOKEN. Update it in the backend deployment environment.")
+    if response.status_code == 403:
+        logger.error("GitHub API denied private image access (403)")
+        raise HTTPException(status_code=503, detail="GITHUB_TOKEN lacks repository contents permission")
     if response.status_code >= 400:
         logger.error("GitHub image read returned HTTP %s", response.status_code)
         raise HTTPException(status_code=502, detail="Could not retrieve image from GitHub")
@@ -228,7 +256,7 @@ def clean_inventory_id(value):
 def analytics_collection():
     global _client
 
-    uri = os.environ.get("MONGODB_URI")
+    uri = env_value("MONGODB_URI")
     if not uri:
         raise HTTPException(status_code=500, detail="Database is not configured")
 
@@ -323,7 +351,7 @@ def create_inventory_product(
         if collection.find_one({"inventory.product_id": product_id}, {"_id": 1}):
             raise HTTPException(status_code=409, detail="Product ID already exists")
     except PyMongoError as error:
-        logger.error("Inventory create database operation failed: %s", type(error).__name__)
+        log_mongo_error("Inventory create database operation", error)
         raise HTTPException(status_code=503, detail="Inventory database is unavailable") from error
     image_url, image_path = upload_github_image(image)
     now = datetime.now(timezone.utc)
@@ -336,7 +364,7 @@ def create_inventory_product(
             pass
         raise HTTPException(status_code=409, detail="Product ID already exists") from error
     except PyMongoError as error:
-        logger.error("Inventory create database operation failed: %s", type(error).__name__)
+        log_mongo_error("Inventory create database operation", error)
         try:
             delete_github_image(image_path)
         except HTTPException:
@@ -369,7 +397,7 @@ def update_inventory_product(
     try:
         products_collection().update_one({"_id": old["_id"]}, {"$set": {"name": name.strip(), "category": category.strip(), "price": price, "image": image_url, "inventory.description": description.strip(), "inventory.stock": stock, "inventory.image_url": image_url, "inventory.image_path": image_path, "inventory.updated_at": now, "inventory.updated_by": admin}})
     except PyMongoError as error:
-        logger.error("Inventory update failed: %s", type(error).__name__)
+        log_mongo_error("Inventory update", error)
         if replacement:
             try:
                 delete_github_image(image_path)
@@ -398,7 +426,7 @@ def delete_inventory_product(product_id: str, admin: str = Depends(inventory_adm
     try:
         result = products.delete_one({"_id": old["_id"]})
     except PyMongoError as error:
-        logger.error("Inventory delete failed for admin %s: %s", admin, type(error).__name__)
+        log_mongo_error(f"Inventory delete for admin {admin}", error)
         raise HTTPException(status_code=503, detail="Could not delete product") from error
     if result.deleted_count and (old.get("inventory") or {}).get("image_path"):
         try:
@@ -436,6 +464,7 @@ def track_visit():
             "last_updated": timestamp.isoformat().replace("+00:00", "Z"),
         }
     except PyMongoError as error:
+        log_mongo_error("Visitor tracking", error)
         raise HTTPException(status_code=503, detail="Could not track visit") from error
 
 
